@@ -107,51 +107,56 @@ module Fastlane
 
       def self.upload_app(token, client_id, app_id, apk_path, is_aab)
         UI.message("Fetching upload URL")
-
+      
         responseData = JSON.parse("{}")
         responseData["success"] = false
         responseData["code"] = 0
-
+      
         file_size_in_bytes = File.size(apk_path.to_s)
         sha256 = Digest::SHA256.file(apk_path).hexdigest
-
-        if(is_aab)
+        UI.message("File size: #{file_size_in_bytes} bytes")
+        UI.message("SHA256: #{sha256}")
+      
+        if is_aab
           uri = URI.parse("https://connect-api.cloud.huawei.com/api/publish/v2/upload-url/for-obs?appId=#{app_id}&fileName=release.aab&contentLength=#{file_size_in_bytes}&suffix=aab")
+          UI.message("Upload URL request: #{uri}")
           upload_filename = "release.aab"
         else
           uri = URI.parse("https://connect-api.cloud.huawei.com/api/publish/v2/upload-url/for-obs?appId=#{app_id}&fileName=release.apk&contentLength=#{file_size_in_bytes}&suffix=apk")
+          UI.message("Upload URL request: #{uri}")
           upload_filename = "release.apk"
         end
-
+      
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = true
         request = Net::HTTP::Get.new(uri.request_uri)
         request["client_id"] = client_id
         request["Authorization"] = "Bearer #{token}"
         request["Content-Type"] = "application/json"
-
+        
+        UI.message("Fetching upload URL with HTTP client: #{http}")
+        
         response = http.request(request)
-
+      
         if !response.kind_of? Net::HTTPSuccess
           UI.user_error!("Cannot obtain upload url, please check API Token / Permissions (status code: #{response.code})")
           responseData["success"] = false
           return responseData
         end
-
+      
         result_json = JSON.parse(response.body)
-
+        UI.message("Upload URL response: #{result_json}")
+      
         if result_json.nil? || result_json['urlInfo'].nil? || result_json['urlInfo']['url'].nil?
           UI.message('Cannot obtain upload url')
           UI.user_error!(response.body)
-
+      
           responseData["success"] = false
           return responseData
         else
           UI.important('Uploading app')
           # Upload App
-          boundary = "755754302457647"
           uri = URI(result_json['urlInfo']['url'])
-          # uri = URI("http://localhost/dashboard/test")
           http = Net::HTTP.new(uri.host, uri.port)
           http.use_ssl = true
           request = Net::HTTP::Put.new(uri)
@@ -161,48 +166,55 @@ module Fastlane
           request["Host"] = result_json['urlInfo']['headers']['Host']
           request["x-amz-date"] = result_json['urlInfo']['headers']['x-amz-date']
           request["x-amz-content-sha256"] = result_json['urlInfo']['headers']['x-amz-content-sha256']
-
-          request.body = File.read(apk_path.to_s)
+          request["Content-Length"] = file_size_in_bytes.to_s  # Explicitly set Content-Length
+      
+          # Stream the file instead of reading it into memory
+          request.body_stream = File.open(apk_path.to_s, 'rb')
           request.content_type = 'application/octet-stream'
-
+      
+          UI.message("Upload headers: #{request.to_hash}")
+      
           result = http.request(request)
+          UI.message("Upload response: #{result.body}")
           if !result.kind_of? Net::HTTPSuccess
             UI.user_error!(result.body)
             UI.user_error!("Cannot upload app, please check API Token / Permissions (status code: #{result.code})")
             responseData["success"] = false
             return responseData
           end
-
+      
           if result.code.to_i == 200
             UI.success('Upload app to AppGallery Connect successful')
             UI.important("Saving app information")
-
+      
             uri = URI.parse("https://connect-api.cloud.huawei.com/api/publish/v2/app-file-info?appId=#{app_id}")
-
+      
             http = Net::HTTP.new(uri.host, uri.port)
             http.use_ssl = true
             request = Net::HTTP::Put.new(uri.request_uri)
             request["client_id"] = client_id
             request["Authorization"] = "Bearer #{token}"
             request["Content-Type"] = "application/json"
-
-            data = {fileType: 5, files: [{
-
+      
+            data = {
+              fileType: 5,
+              files: [{
                 fileName: upload_filename,
                 fileDestUrl: result_json['urlInfo']['objectId']
-                # size: result_json['result']['UploadFileRsp']['fileInfoList'][0]['size'].to_s
-
-            }] }.to_json
-
+              }]
+            }.to_json
+      
+            UI.message("Saving app info with data: #{data}")
             request.body = data
             response = http.request(request)
+            UI.message("Save app info response: #{response.body}")
             if !response.kind_of? Net::HTTPSuccess
               UI.user_error!("Cannot save app info, please check API Token / Permissions (status code: #{response.code})")
               responseData["success"] = false
               return responseData
             end
             result_json = JSON.parse(response.body)
-
+      
             if result_json['ret']['code'] == 0
               UI.success("App information saved.")
               responseData["success"] = true
